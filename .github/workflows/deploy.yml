@@ -1,0 +1,64 @@
+name: CI/CD to AWS Windows Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '7.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore MyApp.csproj
+
+      - name: Build project
+        run: dotnet build MyApp.csproj --configuration Release --no-restore
+
+      - name: Publish project
+        run: dotnet publish MyApp.csproj -c Release -o ./publish
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: app
+          path: ./publish
+
+  approval:
+    needs: build
+    runs-on: windows-latest
+    environment:
+      name: production
+      url: http://${{ secrets.AWS_HOST }}
+    steps:
+      - name: Wait for DevOps Approval
+        run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
+
+  deploy:
+    needs: approval
+    runs-on: windows-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: app
+          path: ./app
+
+      - name: Deploy to AWS Windows Server
+        shell: powershell
+        run: |
+          echo "🚀 Deploying application to AWS Windows Server"
+          $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
+          $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
+          $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" -Credential $cred -Authentication Basic
+          Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
+          Invoke-Command -Session $session -ScriptBlock { iisreset }
+          Remove-PSSession $session
