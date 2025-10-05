@@ -33,14 +33,14 @@ jobs:
           path: ./publish
 
   approval:
-    needs: build
-    runs-on: windows-latest
-    environment:
-      name: production
-      url: http://${{ secrets.AWS_HOST }}
-    steps:
-      - name: Wait for DevOps Approval
-        run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
+  needs: build
+  runs-on: windows-latest
+  environment:
+    name: production  # ✅ Only name allowed with secrets
+  steps:
+    - name: Wait for DevOps Approval
+      run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
+
 
   deploy:
     needs: approval
