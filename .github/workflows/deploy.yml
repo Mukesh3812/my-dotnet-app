@@ -36,8 +36,7 @@ jobs:
     needs: build
     runs-on: windows-latest
     environment:
-      name: production
-      url: http://${{ secrets.AWS_HOST }}
+      name: production  # ✅ Only static environment name is allowed
     steps:
       - name: Wait for DevOps Approval
         run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
@@ -56,9 +55,19 @@ jobs:
         shell: powershell
         run: |
           echo "🚀 Deploying application to AWS Windows Server"
+
+          # Create secure password and credentials from secrets
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
+
+          # Open remote PowerShell session
           $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" -Credential $cred -Authentication Basic
+
+          # Copy files to server
           Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
+
+          # Restart IIS
           Invoke-Command -Session $session -ScriptBlock { iisreset }
+
+          # Clean up session
           Remove-PSSession $session
