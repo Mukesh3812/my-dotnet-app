@@ -57,7 +57,7 @@ jobs:
           echo "🚀 Deploying application to AWS Windows Server"
 
           # Accept self-signed certificate (optional: comment out if not needed)
-          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+          # [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
 
           # Create secure password and credentials from secrets
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
