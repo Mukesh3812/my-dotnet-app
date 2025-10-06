@@ -1,9 +1,52 @@
+name: CI/CD to AWS Windows Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '7.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore MyApp/MyApp.csproj
+
+      - name: Build project
+        run: dotnet build MyApp/MyApp.csproj --configuration Release --no-restore
+
+      - name: Publish project
+        run: dotnet publish MyApp/MyApp.csproj -c Release -o ./publish
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4  # ✅ Updated to v4
+        with:
+          name: app
+          path: ./publish
+
+  approval:
+    needs: build
+    runs-on: windows-latest
+    environment:
+      name: production
+    steps:
+      - name: Wait for DevOps Approval
+        run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
+
   deploy:
     needs: approval
     runs-on: windows-latest
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4  # ✅ Updated to v4
         with:
           name: app
           path: ./app
@@ -17,7 +60,7 @@
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
 
-          # 🔐 Use SSL for secure remote session
+          # Open remote PowerShell session
           $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" -Credential $cred -Authentication Basic -UseSSL
 
           # Copy files to server
