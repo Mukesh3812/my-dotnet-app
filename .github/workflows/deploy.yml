@@ -61,7 +61,8 @@ jobs:
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
 
           # Open remote PowerShell session
-          $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" -Credential $cred -Authentication Basic -UseSSL
+          # $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" -Credential $cred -Authentication Basic -UseSSL
+          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
 
           # Copy files to server
           Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
