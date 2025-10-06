@@ -60,88 +60,46 @@ jobs:
           $hostName = "${{ secrets.AWS_HOST }}"
           Write-Host "🔍 Target host: $hostName"
 
-          # 1) Quick connectivity test to port 5986
-          Write-Host "🔌 Testing TCP connectivity to $hostName:5986 ..."
-          $portOpen = $false
-          try {
-            if (Get-Command Test-NetConnection -ErrorAction SilentlyContinue) {
-              $tc = Test-NetConnection -ComputerName $hostName -Port 5986 -WarningAction SilentlyContinue
-              $portOpen = $tc.TcpTestSucceeded
-            } else {
-              $tcp = New-Object System.Net.Sockets.TcpClient
-              $async = $tcp.BeginConnect($hostName, 5986, $null, $null)
-              $wait = $async.AsyncWaitHandle.WaitOne(3000)
-              if ($wait -and $tcp.Connected) {
-                $portOpen = $true
-                $tcp.EndConnect($async)
-              } else {
-                $portOpen = $false
-              }
-              $tcp.Close()
-            }
-          } catch {
-            Write-Warning "⚠️ Connectivity test failed: $_"
-            $portOpen = $false
-          }
+          # Bypass SSL certificate checks
+          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { return $true }
 
-          if (-not $portOpen) {
-            Write-Error "❌ Port 5986 is not reachable on $hostName. Ensure WinRM HTTPS listener exists, Windows Firewall and AWS Security Group allow inbound TCP 5986, and the service is running."
-            Exit 1
-          } else {
-            Write-Host "✅ Port 5986 reachable on $hostName"
-          }
-
-          # 2) Bypass .NET SSL cert validation (for self-signed certs)
-          Write-Host "🔐 Disabling .NET server certificate validation (for this job only)..."
-          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-
-          # 3) Build credential object
+          # Create secure credential
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
 
-          # 4) Create PSSessionOption to skip CA/CN/revocation checks
-          Write-Host "🧩 Creating PSSessionOption to skip CA/CN checks..."
+          # Setup session options to bypass SSL issues
           $so = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
 
-          # 5) Try to create the remote session using -UseSSL and the session option
           try {
-            Write-Host "🔐 Attempting New-PSSession (UseSSL) ..."
+            Write-Host "🔐 Attempting New-PSSession (UseSSL)..."
             $session = New-PSSession -ComputerName $hostName `
                                      -Credential $cred `
                                      -Authentication Basic `
                                      -UseSSL `
                                      -SessionOption $so
-            if (!$session) {
-              Write-Error "❌ New-PSSession returned null. Cannot proceed."
-              Exit 1
-            }
-            Write-Host "✅ Remote PowerShell session established."
-          } catch {
-            Write-Error "❌ Error while creating remote session: $_"
-            Write-Host "ℹ️ If this is a connectivity issue, check server winrm listeners with: winrm enumerate winrm/config/listener"
-            Exit 1
-          }
 
-          # 6) Copy files to remote server
-          try {
+            if (-not $session) {
+              Write-Error "❌ Failed to create remote session. Session is null."
+              exit 1
+            }
+
+            Write-Host "✅ Remote PowerShell session established."
+
+            # Copy files to remote server
             Write-Host "📁 Copying files to remote server..."
             Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
-            Write-Host "✅ Files copied."
-          } catch {
-            Write-Error "❌ Copy-Item failed: $_"
-            Remove-PSSession -Session $session -ErrorAction SilentlyContinue
-            Exit 1
-          }
+            Write-Host "✅ Files copied successfully."
 
-          # 7) Restart IIS
-          try {
-            Write-Host "🔁 Restarting IIS on remote server..."
+            # Restart IIS
+            Write-Host "🔁 Restarting IIS..."
             Invoke-Command -Session $session -ScriptBlock { iisreset }
             Write-Host "✅ IIS restarted."
-          } catch {
-            Write-Warning "⚠️ Failed to restart IIS: $_"
-          }
 
-          # 8) Cleanup
-          Remove-PSSession -Session $session
-          Write-Host "✅ Deployment complete."
+            # Clean up session
+            Remove-PSSession -Session $session
+            Write-Host "✅ Remote session cleaned up."
+
+          } catch {
+            Write-Error "❌ Deployment failed: $_"
+            exit 1
+          }
