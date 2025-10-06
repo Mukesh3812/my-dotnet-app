@@ -27,7 +27,7 @@ jobs:
         run: dotnet publish MyApp/MyApp.csproj -c Release -o ./publish
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4  # ✅ Updated to v4
+        uses: actions/upload-artifact@v4
         with:
           name: app
           path: ./publish
@@ -46,7 +46,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v4  # ✅ Updated to v4
+        uses: actions/download-artifact@v4
         with:
           name: app
           path: ./app
@@ -56,15 +56,33 @@ jobs:
         run: |
           echo "🚀 Deploying application to AWS Windows Server"
 
+          # Accept self-signed certificate (optional: comment out if not needed)
+          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
           # Create secure password and credentials from secrets
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
 
-          # Open remote PowerShell session
-          # $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" -Credential $cred -Authentication Basic -UseSSL
-          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+          # Attempt to open remote PowerShell session
+          try {
+            $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" `
+              -Credential $cred `
+              -Authentication Basic `
+              -UseSSL
 
-          # Copy files to server
+            if (!$session) {
+              Write-Error "❌ Failed to create remote session. `$session is null."
+              exit 1
+            }
+
+            Write-Host "✅ Remote PowerShell session established."
+          }
+          catch {
+            Write-Error "❌ Error while creating remote session: $_"
+            exit 1
+          }
+
+          # Copy files to remote server
           Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
 
           # Restart IIS
