@@ -18,13 +18,13 @@ jobs:
           dotnet-version: '7.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore MyApp.csproj
+        run: dotnet restore MyApp/MyApp.csproj
 
       - name: Build project
-        run: dotnet build MyApp.csproj --configuration Release --no-restore
+        run: dotnet build MyApp/MyApp.csproj --configuration Release --no-restore
 
       - name: Publish project
-        run: dotnet publish MyApp.csproj -c Release -o ./publish
+        run: dotnet publish MyApp/MyApp.csproj -c Release -o ./publish
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4  # ✅ Updated to v4
