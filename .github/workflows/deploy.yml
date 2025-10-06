@@ -27,7 +27,7 @@ jobs:
         run: dotnet publish MyApp.csproj -c Release -o ./publish
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # ✅ Updated to v4
         with:
           name: app
           path: ./publish
@@ -36,7 +36,7 @@ jobs:
     needs: build
     runs-on: windows-latest
     environment:
-      name: production  # ✅ Only static environment name is allowed
+      name: production
     steps:
       - name: Wait for DevOps Approval
         run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
@@ -46,7 +46,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4  # ✅ Updated to v4
         with:
           name: app
           path: ./app
