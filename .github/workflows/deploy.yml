@@ -51,28 +51,25 @@ jobs:
           name: app
           path: ./app
 
-      - name: Deploy to AWS Windows Server (bypass SSL checks)
+      - name: Deploy to AWS Windows Server (bypass SSL)
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          Write-Host "🚀 Deploying application to AWS Windows Server"
+          Write-Host "🚀 Starting deployment to AWS Windows Server"
 
-          $hostName = "${{ secrets.AWS_HOST }}"
-          Write-Host "🔍 Target host: $hostName"
+          # Trust any SSL cert (for self-signed certs)
+          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
 
-          # Bypass SSL certificate checks
-          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { return $true }
-
-          # Create secure credential
+          # Prepare credentials
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
 
-          # Setup session options to bypass SSL issues
+          # Skip certificate validation in session options
           $so = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
 
           try {
-            Write-Host "🔐 Attempting New-PSSession (UseSSL)..."
-            $session = New-PSSession -ComputerName $hostName `
+            # Create remote PowerShell session
+            $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" `
                                      -Credential $cred `
                                      -Authentication Basic `
                                      -UseSSL `
@@ -83,21 +80,20 @@ jobs:
               exit 1
             }
 
-            Write-Host "✅ Remote PowerShell session established."
+            Write-Host "✅ Remote session established."
 
-            # Copy files to remote server
+            # Copy files
             Write-Host "📁 Copying files to remote server..."
-            Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
-            Write-Host "✅ Files copied successfully."
+            Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" `
+                      -Recurse -Force -ToSession $session
 
             # Restart IIS
             Write-Host "🔁 Restarting IIS..."
             Invoke-Command -Session $session -ScriptBlock { iisreset }
-            Write-Host "✅ IIS restarted."
 
-            # Clean up session
+            # End session
             Remove-PSSession -Session $session
-            Write-Host "✅ Remote session cleaned up."
+            Write-Host "✅ Deployment complete."
 
           } catch {
             Write-Error "❌ Deployment failed: $_"
