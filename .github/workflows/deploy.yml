@@ -41,7 +41,7 @@ jobs:
       - name: Wait for DevOps Approval
         run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
 
-  deploy:
+    deploy:
     needs: approval
     runs-on: windows-latest
     steps:
@@ -52,7 +52,7 @@ jobs:
           path: ./app
       
       - name: Deploy to AWS Windows Server
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Write-Host "🚀 Starting deployment to AWS Windows Server"
@@ -111,9 +111,10 @@ jobs:
             Remove-PSSession -Session $session
             Write-Host "✅ Deployment complete! 🎉"
             
-          } catch {
-            Write-Error "❌ Deployment failed: $_"
-            Write-Error "Error details: $($_.Exception.Message)"
+          }
+          catch {
+            Write-Error ("❌ Deployment failed: " + $_)
+            Write-Error ("Error details: " + $_.Exception.Message)
             if ($session) { 
               Remove-PSSession -Session $session -ErrorAction SilentlyContinue
             }
