@@ -11,21 +11,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-      
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '7.0.x'
-      
+
       - name: Restore dependencies
         run: dotnet restore MyApp/MyApp.csproj
-      
+
       - name: Build project
         run: dotnet build MyApp/MyApp.csproj --configuration Release --no-restore
-      
+
       - name: Publish project
         run: dotnet publish MyApp/MyApp.csproj -c Release -o ./publish
-      
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -41,7 +41,7 @@ jobs:
       - name: Wait for DevOps Approval
         run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
 
-    deploy:
+  deploy:
     needs: approval
     runs-on: windows-latest
     steps:
@@ -50,73 +50,56 @@ jobs:
         with:
           name: app
           path: ./app
-      
+
       - name: Deploy to AWS Windows Server
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Write-Host "🚀 Starting deployment to AWS Windows Server"
-          
-          # Prepare credentials
+
+          # Credentials
           $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
-          
-          # Skip certificate validation in session options
+
+          # Session options
           $so = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-          
+
           try {
-            # Pre-check: ensure WinRM HTTPS/Basic works
             Write-Host "🔎 Testing WinRM connection..."
             Test-WSMan -ComputerName "${{ secrets.AWS_HOST }}" -UseSSL -Port 5986 -Authentication Basic -Credential $cred
-            
-            # Create remote PowerShell session with Basic Authentication
+
             Write-Host "📡 Connecting to ${{ secrets.AWS_HOST }}..."
             $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" `
                                      -Credential $cred `
                                      -Authentication Basic `
-                                     -UseSSL `
-                                     -Port 5986 `
+                                     -UseSSL -Port 5986 `
                                      -SessionOption $so
-            
+
             if (-not $session) {
-              Write-Error "❌ Failed to create remote session. Session is null."
+              Write-Error "❌ Failed to create remote session."
               exit 1
             }
-            
+
             Write-Host "✅ Remote session established."
-            
-            # Ensure destination directory exists
+
             Write-Host "📁 Ensuring destination directory exists..."
             Invoke-Command -Session $session -ScriptBlock {
               if (-not (Test-Path "C:\inetpub\wwwroot\myapp")) {
                 New-Item -Path "C:\inetpub\wwwroot\myapp" -ItemType Directory -Force | Out-Null
               }
             }
-            
-            # Copy files
-            Write-Host "📁 Copying files to remote server..."
-            Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" `
-                      -Recurse -Force -ToSession $session
-            
-            Write-Host "✅ Files copied successfully."
-            
-            # Restart IIS
+
+            Write-Host "📁 Copying files..."
+            Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
+
             Write-Host "🔁 Restarting IIS..."
-            Invoke-Command -Session $session -ScriptBlock { 
-              iisreset 
-              Write-Host "IIS restarted successfully."
-            }
-            
-            # End session
+            Invoke-Command -Session $session -ScriptBlock { iisreset }
+
             Remove-PSSession -Session $session
             Write-Host "✅ Deployment complete! 🎉"
-            
           }
           catch {
-            Write-Error ("❌ Deployment failed: " + $_)
-            Write-Error ("Error details: " + $_.Exception.Message)
-            if ($session) { 
-              Remove-PSSession -Session $session -ErrorAction SilentlyContinue
-            }
+            Write-Error ("❌ Deployment failed: " + $_.Exception.Message)
+            if ($session) { Remove-PSSession -Session $session -ErrorAction SilentlyContinue }
             exit 1
           }
