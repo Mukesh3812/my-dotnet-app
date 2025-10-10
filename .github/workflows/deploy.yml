@@ -42,64 +42,103 @@ jobs:
         run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
 
   deploy:
-    needs: approval
-    runs-on: windows-latest
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app
-          path: ./app
+  needs: approval
+  runs-on: windows-latest
+  steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: app
+        path: ./app
 
-      - name: Deploy to AWS Windows Server
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "🚀 Starting deployment to AWS Windows Server"
+    - name: Install required PowerShell modules
+      shell: pwsh
+      run: |
+        # Ensure PSRemoting is available
+        Enable-PSRemoting -Force -SkipNetworkProfileCheck
+        
+    - name: Deploy to AWS Windows Server
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        Write-Host "🚀 Starting deployment to AWS Windows Server"
 
-          # Credentials
-          $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
-          $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
+        # Credentials
+        $pw = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
+        $cred = New-Object System.Management.Automation.PSCredential ("${{ secrets.AWS_USER }}", $pw)
 
-          # Session options
-          $so = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+        # Session options with more relaxed settings for troubleshooting
+        $so = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
 
-          try {
-            Write-Host "🔎 Testing WinRM connection..."
-            Test-WSMan -ComputerName "${{ secrets.AWS_HOST }}" -UseSSL -Port 5986 -Authentication Basic -Credential $cred
+        try {
+          Write-Host "🔎 Testing basic connectivity..."
+          Test-Connection -ComputerName "${{ secrets.AWS_HOST }}" -Count 1 -Quiet
 
-            Write-Host "📡 Connecting to ${{ secrets.AWS_HOST }}..."
-            $session = New-PSSession -ComputerName "${{ secrets.AWS_HOST }}" `
-                                     -Credential $cred `
-                                     -Authentication Basic `
-                                     -UseSSL -Port 5986 `
-                                     -SessionOption $so
-
-            if (-not $session) {
-              Write-Error "❌ Failed to create remote session."
-              exit 1
-            }
-
-            Write-Host "✅ Remote session established."
-
-            Write-Host "📁 Ensuring destination directory exists..."
-            Invoke-Command -Session $session -ScriptBlock {
-              if (-not (Test-Path "C:\inetpub\wwwroot\myapp")) {
-                New-Item -Path "C:\inetpub\wwwroot\myapp" -ItemType Directory -Force | Out-Null
-              }
-            }
-
-            Write-Host "📁 Copying files..."
-            Copy-Item -Path ./app/* -Destination "C:\inetpub\wwwroot\myapp" -Recurse -Force -ToSession $session
-
-            Write-Host "🔁 Restarting IIS..."
-            Invoke-Command -Session $session -ScriptBlock { iisreset }
-
-            Remove-PSSession -Session $session
-            Write-Host "✅ Deployment complete! 🎉"
-          }
-          catch {
-            Write-Error ("❌ Deployment failed: " + $_.Exception.Message)
-            if ($session) { Remove-PSSession -Session $session -ErrorAction SilentlyContinue }
+          Write-Host "🔎 Testing port 5986..."
+          $tcpTest = Test-NetConnection -ComputerName "${{ secrets.AWS_HOST }}" -Port 5986
+          if (-not $tcpTest.TcpTestSucceeded) {
+            Write-Error "❌ Port 5986 is not accessible"
             exit 1
           }
+
+          Write-Host "🔎 Testing WinRM connection..."
+          $wsmanTest = Test-WSMan -ComputerName "${{ secrets.AWS_HOST }}" -UseSSL -Port 5986 -Authentication Basic -Credential $cred -ErrorAction SilentlyContinue
+          
+          if ($wsmanTest) {
+            Write-Host "✅ WinRM connection successful"
+          } else {
+            Write-Host "⚠️  WinRM test failed, trying alternative approach..."
+          }
+
+          Write-Host "📡 Connecting to ${{ secrets.AWS_HOST }}..."
+          $sessionParams = @{
+            ComputerName = "${{ secrets.AWS_HOST }}"
+            Credential = $cred
+            Authentication = "Basic"
+            UseSSL = $true
+            Port = 5986
+            SessionOption = $so
+            ErrorAction = "Stop"
+          }
+
+          $session = New-PSSession @sessionParams
+
+          if (-not $session) {
+            Write-Error "❌ Failed to create remote session."
+            exit 1
+          }
+
+          Write-Host "✅ Remote session established."
+
+          Write-Host "📁 Ensuring destination directory exists..."
+          Invoke-Command -Session $session -ScriptBlock {
+            $destination = "C:\inetpub\wwwroot\myapp"
+            if (-not (Test-Path $destination)) {
+              New-Item -Path $destination -ItemType Directory -Force | Out-Null
+              Write-Host "✅ Created directory: $destination"
+            } else {
+              Write-Host "✅ Directory already exists: $destination"
+            }
+          }
+
+          Write-Host "📁 Copying files..."
+          Copy-Item -Path "./app/*" -Destination "C:\inetpub\wwwroot\myapp\" -Recurse -Force -ToSession $session
+
+          Write-Host "🔁 Restarting IIS..."
+          Invoke-Command -Session $session -ScriptBlock { 
+            iisreset
+            Write-Host "✅ IIS restarted successfully"
+          }
+
+          Remove-PSSession -Session $session
+          Write-Host "✅ Deployment complete! 🎉"
+        }
+        catch {
+          Write-Error ("❌ Deployment failed: " + $_.Exception.Message)
+          Write-Host "Detailed error information:"
+          Write-Host $_.Exception.StackTrace
+          if ($session) { 
+            Remove-PSSession -Session $session -ErrorAction SilentlyContinue 
+          }
+          exit 1
+        }
