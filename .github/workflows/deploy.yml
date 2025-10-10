@@ -1,225 +1,161 @@
-name: CI/CD to AWS Windows Server
+deploy:
+  needs: approval
+  runs-on: windows-latest
+  steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: app
+        path: ./app
 
-on:
-  push:
-    branches:
-      - main
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: '7.0.x'
-
-      - name: Restore dependencies
-        run: dotnet restore MyApp/MyApp.csproj
-
-      - name: Build project
-        run: dotnet build MyApp/MyApp.csproj --configuration Release --no-restore
-
-      - name: Publish project
-        run: dotnet publish MyApp/MyApp.csproj -c Release -o ./publish
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app
-          path: ./publish
-
-  approval:
-    needs: build
-    runs-on: windows-latest
-    environment:
-      name: production
-    steps:
-      - name: Wait for DevOps Approval
-        run: echo "⏳ Waiting for DevOps approval before deploying to PRODUCTION"
-
-  deploy:
-    needs: approval
-    runs-on: windows-latest
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app
-          path: ./app
-
-      - name: Test AWS connectivity
-        shell: pwsh
-        run: |
-          Write-Host "🌐 Testing connectivity to AWS instance..."
-          $hostname = "${{ secrets.AWS_HOST }}"
-          
-          Write-Host "🔌 Testing WinRM HTTP port (5985)..."
-          $portTest = Test-NetConnection -ComputerName $hostname -Port 5985 -InformationLevel Quiet
-          if ($portTest) {
-            Write-Host "✅ Port 5985: OPEN"
-          } else {
-            Write-Error "❌ Port 5985: CLOSED - Check AWS Security Groups"
-            Write-Host "💡 Make sure AWS Security Group allows inbound traffic on port 5985"
+    - name: Test AWS connectivity with detailed debugging
+      shell: pwsh
+      run: |
+        Write-Host "🔍 Detailed connectivity test..." -ForegroundColor Cyan
+        $hostname = "${{ secrets.AWS_HOST }}"
+        
+        Write-Host "1. Testing basic network connectivity..." -ForegroundColor Yellow
+        try {
+            $ping = Test-Connection -ComputerName $hostname -Count 1 -Quiet
+            if ($ping) { Write-Host "   ✅ Network reachable" -ForegroundColor Green }
+            else { Write-Host "   ⚠️ ICMP may be blocked (common in AWS)" -ForegroundColor Yellow }
+        } catch { Write-Host "   ⚠️ Ping test failed: $($_.Exception.Message)" -ForegroundColor Yellow }
+        
+        Write-Host "2. Testing WinRM port 5985..." -ForegroundColor Yellow
+        $portTest = Test-NetConnection -ComputerName $hostname -Port 5985 -InformationLevel Detailed
+        if ($portTest.TcpTestSucceeded) { 
+            Write-Host "   ✅ Port 5985 is open and accessible" -ForegroundColor Green 
+        } else {
+            Write-Host "   ❌ Port 5985 connection failed" -ForegroundColor Red
             exit 1
-          }
+        }
+        
+        Write-Host "3. Testing WinRM service..." -ForegroundColor Yellow
+        try {
+            # Test without credentials first
+            $result = Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -ErrorAction SilentlyContinue
+            if ($result) {
+                Write-Host "   ✅ WinRM service is responding" -ForegroundColor Green
+            } else {
+                Write-Host "   ⚠️ WinRM service test failed (may need auth)" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "   ⚠️ WinRM test error: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
 
-      - name: Deploy to AWS Windows Server via HTTP
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "🚀 Starting deployment to AWS Windows Server via HTTP"
+    - name: Debug WinRM connection with different authentication methods
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Continue"
+        Write-Host "🔐 Testing authentication methods..." -ForegroundColor Cyan
+        
+        $hostname = "${{ secrets.AWS_HOST }}"
+        $username = "${{ secrets.AWS_USER }}"
+        
+        # Create credential
+        $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
+        $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+        
+        Write-Host "Username: $username" -ForegroundColor Yellow
+        Write-Host "Hostname: $hostname" -ForegroundColor Yellow
+        
+        Write-Host "`n1. Testing with Test-WSMan..." -ForegroundColor Yellow
+        try {
+            Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Authentication Basic -Credential $credential -ErrorAction Stop
+            Write-Host "   ✅ Test-WSMan successful!" -ForegroundColor Green
+        } catch {
+            Write-Host "   ❌ Test-WSMan failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        
+        Write-Host "`n2. Testing with New-PSSession..." -ForegroundColor Yellow
+        try {
+            $sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+            $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Authentication Basic -Credential $credential -SessionOption $sessionOption -ErrorAction Stop
+            if ($session) {
+                Write-Host "   ✅ New-PSSession successful!" -ForegroundColor Green
+                Remove-PSSession $session
+            }
+        } catch {
+            Write-Host "   ❌ New-PSSession failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "   Error details:" -ForegroundColor Red
+            Write-Host "   - Message: $($_.Exception.Message)" -ForegroundColor Red
+            if ($_.Exception.InnerException) {
+                Write-Host "   - Inner: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+            }
+        }
+        
+        Write-Host "`n3. Testing with alternate authentication..." -ForegroundColor Yellow
+        try {
+            $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -SessionOption (New-PSSessionOption -SkipCACheck) -ErrorAction SilentlyContinue
+            if ($session) {
+                Write-Host "   ✅ Alternate auth successful!" -ForegroundColor Green
+                Remove-PSSession $session
+            } else {
+                Write-Host "   ❌ Alternate auth failed" -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "   ❌ Alternate auth error: $($_.Exception.Message)" -ForegroundColor Red
+        }
 
-          # Validate required secrets
-          if (-not "${{ secrets.AWS_HOST }}") { throw "❌ AWS_HOST secret is missing" }
-          if (-not "${{ secrets.AWS_USER }}") { throw "❌ AWS_USER secret is missing" }
-          if (-not "${{ secrets.AWS_PASSWORD }}") { throw "❌ AWS_PASSWORD secret is missing" }
-
-          # Credentials
-          $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential("${{ secrets.AWS_USER }}", $securePassword)
-
-          # Session options to bypass certificate checks
-          $sessionOptions = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-
-          try {
-            Write-Host "--- Phase 1: Testing WinRM Connection ---"
-            Write-Host "🔗 Testing connection to ${{ secrets.AWS_HOST }}:5985..."
-            
-            Test-WSMan -ComputerName "${{ secrets.AWS_HOST }}" -Port 5985 -Authentication Basic -Credential $credential -ErrorAction Stop
-            Write-Host "✅ WinRM connection successful"
-
-            Write-Host "--- Phase 2: Establishing Remote Session ---"
-            Write-Host "📡 Creating remote session..."
-            
+    - name: Deploy to AWS Windows Server
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        Write-Host "🚀 Starting deployment..." -ForegroundColor Green
+        
+        $hostname = "${{ secrets.AWS_HOST }}"
+        $username = "${{ secrets.AWS_USER }}"
+        
+        # Credentials
+        $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
+        $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+        
+        # Session options
+        $sessionOptions = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+        
+        try {
+            Write-Host "1. Creating remote session..." -ForegroundColor Yellow
             $sessionParams = @{
-                ComputerName = "${{ secrets.AWS_HOST }}"
+                ComputerName = $hostname
                 Credential = $credential
                 Port = 5985
-                Authentication = "Basic"
+                UseSSL = $false
                 SessionOption = $sessionOptions
                 ErrorAction = "Stop"
             }
             
+            # Try without explicit Authentication first
             $session = New-PSSession @sessionParams
             
-            if (-not $session) {
-                throw "Failed to create remote session"
-            }
-            Write-Host "✅ Remote session established"
-
-            Write-Host "--- Phase 3: Verifying Server Access ---"
-            Write-Host "🔍 Testing server access..."
-            
-            $serverInfo = Invoke-Command -Session $session -ScriptBlock {
-                return @{
-                    ComputerName = $env:COMPUTERNAME
-                    OS = (Get-WmiObject Win32_OperatingSystem).Caption
-                    Time = Get-Date
-                    IISInstalled = (Get-WindowsFeature -Name Web-Server).Installed
-                }
-            }
-            
-            Write-Host "✅ Server access verified:"
-            Write-Host "   - Server: $($serverInfo.ComputerName)"
-            Write-Host "   - OS: $($serverInfo.OS)"
-            Write-Host "   - IIS Installed: $($serverInfo.IISInstalled)"
-
-            Write-Host "--- Phase 4: Preparing Deployment Directory ---"
-            Write-Host "📁 Setting up deployment directory..."
-            
+            Write-Host "2. Preparing deployment directory..." -ForegroundColor Yellow
             Invoke-Command -Session $session -ScriptBlock {
-                $deployPath = "C:\inetpub\wwwroot\myapp"
-                $backupPath = "C:\inetpub\wwwroot\myapp_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-                
-                try {
-                    # Create backup if directory exists
-                    if (Test-Path $deployPath) {
-                        Write-Host "📦 Backing up existing application..."
-                        if (Test-Path $backupPath) {
-                            Remove-Item $backupPath -Recurse -Force
-                        }
-                        Copy-Item $deployPath $backupPath -Recurse -Force
-                        Write-Host "✅ Backup created: $backupPath"
-                    }
-                    
-                    # Ensure directory exists and is empty
-                    if (-not (Test-Path $deployPath)) {
-                        New-Item -Path $deployPath -ItemType Directory -Force | Out-Null
-                    }
-                    Remove-Item "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
-                    Write-Host "✅ Deployment directory ready: $deployPath"
-                }
-                catch {
-                    Write-Error "Failed to prepare deployment directory: $($_.Exception.Message)"
-                    throw
+                $path = "C:\inetpub\wwwroot\myapp"
+                if (!(Test-Path $path)) { 
+                    New-Item -Path $path -ItemType Directory -Force 
+                    Write-Host "   Created directory: $path"
+                } else {
+                    Remove-Item "$path\*" -Recurse -Force
+                    Write-Host "   Cleaned directory: $path"
                 }
             }
-
-            Write-Host "--- Phase 5: Deploying Application Files ---"
-            Write-Host "📤 Copying files to server..."
             
-            $files = Get-ChildItem -Path "./app" -Recurse | Measure-Object
-            Write-Host "📄 Found $($files.Count) files to deploy"
+            Write-Host "3. Copying files..." -ForegroundColor Yellow
+            Copy-Item -Path "./app/*" -Destination "C:\inetpub\wwwroot\myapp\" -Recurse -Force -ToSession $session
             
-            Copy-Item -Path "./app\*" -Destination "C:\inetpub\wwwroot\myapp\" -Recurse -Force -ToSession $session
-            Write-Host "✅ Files copied successfully"
-
-            Write-Host "--- Phase 6: Finalizing Deployment ---"
-            Write-Host "🔁 Restarting IIS..."
-            
-            $iisResult = Invoke-Command -Session $session -ScriptBlock {
-                try {
-                    Write-Host "Stopping IIS..."
-                    iisreset /stop
-                    Start-Sleep -Seconds 2
-                    Write-Host "Starting IIS..."
-                    iisreset /start
-                    Start-Sleep -Seconds 3
-                    
-                    # Verify IIS is running
-                    $iisService = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
-                    if ($iisService -and $iisService.Status -eq 'Running') {
-                        return @{ Success = $true; Message = "IIS restarted successfully" }
-                    } else {
-                        return @{ Success = $false; Message = "IIS service not running" }
-                    }
-                }
-                catch {
-                    return @{ Success = $false; Message = $_.Exception.Message }
-                }
-            }
-
-            if (-not $iisResult.Success) {
-                throw "IIS restart failed: $($iisResult.Message)"
-            }
-            Write-Host "✅ $($iisResult.Message)"
-
-            Write-Host "--- Phase 7: Cleanup ---"
-            Remove-PSSession -Session $session
-            Write-Host "✅ Deployment completed successfully! 🎉"
-
-          }
-          catch {
-            Write-Error "❌ DEPLOYMENT FAILED"
-            Write-Error "Error: $($_.Exception.Message)"
-            Write-Host "Stack Trace: $($_.Exception.StackTrace)"
-            
-            if ($session) {
-                Remove-PSSession -Session $session -ErrorAction SilentlyContinue
-                Write-Host "🧹 Cleaned up remote session"
+            Write-Host "4. Restarting IIS..." -ForegroundColor Yellow
+            Invoke-Command -Session $session -ScriptBlock { 
+                iisreset
+                Write-Host "   IIS restarted successfully"
             }
             
+            Remove-PSSession $session
+            Write-Host "✅ Deployment completed successfully! 🎉" -ForegroundColor Green
+            
+        } catch {
+            Write-Host "❌ Deployment failed!" -ForegroundColor Red
+            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+            if ($_.Exception.InnerException) {
+                Write-Host "Inner error: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+            }
             exit 1
-          }
-
-      - name: Deployment Success Notification
-        if: success()
-        shell: pwsh
-        run: |
-          Write-Host "🎉 Deployment completed successfully!"
-          Write-Host "📅 $(Get-Date)"
-          Write-Host "🌐 Application should be available at: http://${{ secrets.AWS_HOST }}/myapp"
+        }
