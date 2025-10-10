@@ -51,361 +51,172 @@ jobs:
           name: app
           path: ./app
 
-      - name: Validate and debug AWS connectivity
+      - name: Configure WinRM client on runner
         shell: pwsh
         run: |
-          Write-Host "🔍 STARTING COMPREHENSIVE CONNECTIVITY TEST" -ForegroundColor Cyan
+          Write-Host "🔧 CONFIGURING WINRM CLIENT ON GITHUB RUNNER" -ForegroundColor Cyan
           Write-Host "=============================================" -ForegroundColor Cyan
           
-          $hostname = "${{ secrets.AWS_HOST }}"
-          $username = "${{ secrets.AWS_USER }}"
+          $targetHost = "${{ secrets.AWS_HOST }}"
           
-          Write-Host "Target Server: $hostname" -ForegroundColor Yellow
-          Write-Host "Username: $username" -ForegroundColor Yellow
-          Write-Host "Port: 5985 (WinRM HTTP)" -ForegroundColor Yellow
+          Write-Host "1. Enabling unencrypted traffic on client..." -ForegroundColor Yellow
+          winrm set winrm/config/client '@{AllowUnencrypted="true"}'
+          Write-Host "✅ Unencrypted traffic enabled" -ForegroundColor Green
           
-          # Test 1: Basic network connectivity
-          Write-Host "`n1. 🔌 BASIC NETWORK CONNECTIVITY" -ForegroundColor Green
-          try {
-              $pingResult = Test-Connection -ComputerName $hostname -Count 2 -Quiet
-              if ($pingResult) {
-                  Write-Host "   ✅ Server is network reachable" -ForegroundColor Green
-              } else {
-                  Write-Host "   ⚠️  ICMP may be blocked (common in AWS environments)" -ForegroundColor Yellow
-              }
-          } catch {
-              Write-Host "   ⚠️  Ping test error: $($_.Exception.Message)" -ForegroundColor Yellow
-          }
+          Write-Host "2. Adding target to TrustedHosts..." -ForegroundColor Yellow
+          winrm set winrm/config/client '@{TrustedHosts="*"}'
+          Write-Host "✅ TrustedHosts configured to accept all hosts" -ForegroundColor Green
           
-          # Test 2: Port connectivity
-          Write-Host "`n2. 🚪 PORT 5985 ACCESSIBILITY" -ForegroundColor Green
-          $portTest = Test-NetConnection -ComputerName $hostname -Port 5985 -InformationLevel Detailed
-          if ($portTest.TcpTestSucceeded) {
-              Write-Host "   ✅ Port 5985 is open and accepting connections" -ForegroundColor Green
-              Write-Host "   Remote Address: $($portTest.RemoteAddress)" -ForegroundColor White
-              Write-Host "   Remote Port: $($portTest.RemotePort)" -ForegroundColor White
-          } else {
-              Write-Host "   ❌ Port 5985 is closed or blocked" -ForegroundColor Red
-              Write-Host "   💡 Check AWS Security Groups and Windows Firewall" -ForegroundColor Yellow
-              exit 1
-          }
+          Write-Host "3. Enabling Basic authentication..." -ForegroundColor Yellow
+          winrm set winrm/config/client/auth '@{Basic="true"}'
+          Write-Host "✅ Basic authentication enabled" -ForegroundColor Green
           
-          # Test 3: WinRM service detection
-          Write-Host "`n3. 🔧 WinRM SERVICE DETECTION" -ForegroundColor Green
-          try {
-              $wsmanTest = Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -ErrorAction SilentlyContinue
-              if ($wsmanTest) {
-                  Write-Host "   ✅ WinRM service is running and responsive" -ForegroundColor Green
-              } else {
-                  Write-Host "   ⚠️  WinRM service test inconclusive (may require authentication)" -ForegroundColor Yellow
-              }
-          } catch {
-              Write-Host "   ⚠️  WinRM detection error: $($_.Exception.Message)" -ForegroundColor Yellow
-          }
-          
-          Write-Host "`n✅ BASIC CONNECTIVITY TESTS COMPLETED" -ForegroundColor Green
+          Write-Host "4. Verifying client configuration..." -ForegroundColor Yellow
+          winrm get winrm/config/client
+          Write-Host "✅ Client configuration complete" -ForegroundColor Green
 
-      - name: Test authentication methods
+      - name: Test connectivity with new configuration
         shell: pwsh
         run: |
-          Write-Host "`n🔐 AUTHENTICATION TESTING" -ForegroundColor Cyan
-          Write-Host "==========================" -ForegroundColor Cyan
+          Write-Host "🔍 TESTING CONNECTIVITY WITH NEW CONFIG" -ForegroundColor Cyan
+          Write-Host "========================================" -ForegroundColor Cyan
           
           $hostname = "${{ secrets.AWS_HOST }}"
           $username = "${{ secrets.AWS_USER }}"
           
-          # Create credential object
+          Write-Host "Target: $hostname" -ForegroundColor Yellow
+          Write-Host "User: $username" -ForegroundColor Yellow
+          
+          # Create credential
           $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
           
-          Write-Host "Testing authentication for user: $username" -ForegroundColor Yellow
-          
-          # Test 1: Test-WSMan with Basic auth
-          Write-Host "`n1. Testing Test-WSMan with Basic authentication..." -ForegroundColor Yellow
+          Write-Host "`n1. Testing WinRM connection..." -ForegroundColor Yellow
           try {
-              $result = Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Authentication Basic -Credential $credential -ErrorAction Stop
-              Write-Host "   ✅ Test-WSMan with Basic auth: SUCCESS" -ForegroundColor Green
+              Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
+              Write-Host "✅ WinRM connection successful!" -ForegroundColor Green
           } catch {
-              Write-Host "   ❌ Test-WSMan with Basic auth: FAILED" -ForegroundColor Red
-              Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
+              Write-Host "❌ WinRM connection failed: $($_.Exception.Message)" -ForegroundColor Red
           }
           
-          # Test 2: Test-WSMan without explicit auth (negotiate)
-          Write-Host "`n2. Testing Test-WSMan with Negotiate authentication..." -ForegroundColor Yellow
+          Write-Host "`n2. Testing PowerShell remoting..." -ForegroundColor Yellow
           try {
-              $result = Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
-              Write-Host "   ✅ Test-WSMan with Negotiate auth: SUCCESS" -ForegroundColor Green
-          } catch {
-              Write-Host "   ❌ Test-WSMan with Negotiate auth: FAILED" -ForegroundColor Red
-              Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
-          }
-          
-          # Test 3: New-PSSession with session options
-          Write-Host "`n3. Testing New-PSSession with session options..." -ForegroundColor Yellow
-          try {
-              $sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-              $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -SessionOption $sessionOption -ErrorAction Stop
+              $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
               if ($session) {
-                  Write-Host "   ✅ New-PSSession: SUCCESS" -ForegroundColor Green
-                  Write-Host "   Testing remote command execution..." -ForegroundColor White
-                  $remoteResult = Invoke-Command -Session $session -ScriptBlock { 
-                      return @{
-                          ComputerName = $env:COMPUTERNAME
-                          User = "$env:USERDOMAIN\$env:USERNAME"
-                          Time = Get-Date
-                      }
-                  }
-                  Write-Host "   Remote computer: $($remoteResult.ComputerName)" -ForegroundColor White
-                  Write-Host "   Remote user: $($remoteResult.User)" -ForegroundColor White
+                  Write-Host "✅ PowerShell remoting successful!" -ForegroundColor Green
                   Remove-PSSession $session
-                  Write-Host "   ✅ Remote execution verified!" -ForegroundColor Green
               }
           } catch {
-              Write-Host "   ❌ New-PSSession: FAILED" -ForegroundColor Red
-              Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
-              if ($_.Exception.InnerException) {
-                  Write-Host "   Inner Error: $($_.Exception.InnerException.Message)" -ForegroundColor Red
-              }
-          }
-          
-          # Test 4: Alternative authentication approaches
-          Write-Host "`n4. Testing alternative approaches..." -ForegroundColor Yellow
-          try {
-              # Try without session options
-              $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction SilentlyContinue
-              if ($session) {
-                  Write-Host "   ✅ Alternative approach (no session options): SUCCESS" -ForegroundColor Green
-                  Remove-PSSession $session
-              } else {
-                  Write-Host "   ❌ Alternative approach: FAILED" -ForegroundColor Red
-              }
-          } catch {
-              Write-Host "   ❌ Alternative approach error: $($_.Exception.Message)" -ForegroundColor Red
+              Write-Host "❌ PowerShell remoting failed: $($_.Exception.Message)" -ForegroundColor Red
           }
 
-      - name: Deploy application with comprehensive error handling
+      - name: Deploy application
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Write-Host "`n🚀 STARTING DEPLOYMENT PROCESS" -ForegroundColor Cyan
-          Write-Host "===============================" -ForegroundColor Cyan
+          Write-Host "`n🚀 STARTING DEPLOYMENT" -ForegroundColor Cyan
+          WriteHost "====================" -ForegroundColor Cyan
           
           $hostname = "${{ secrets.AWS_HOST }}"
           $username = "${{ secrets.AWS_USER }}"
           
-          # Validate secrets
-          if (-not $hostname) { throw "❌ AWS_HOST secret is missing or empty" }
-          if (-not $username) { throw "❌ AWS_USER secret is missing or empty" }
-          if (-not "${{ secrets.AWS_PASSWORD }}") { throw "❌ AWS_PASSWORD secret is missing or empty" }
+          Write-Host "Target: $hostname" -ForegroundColor Yellow
+          Write-Host "User: $username" -ForegroundColor Yellow
           
-          Write-Host "Deployment Target: $hostname" -ForegroundColor Yellow
-          Write-Host "Deployment User: $username" -ForegroundColor Yellow
-          
-          # Create credential object
+          # Create credential
           $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
-          
-          # Session options for bypassing common issues
-          $sessionOptions = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
           
           $session = $null
           
           try {
               Write-Host "`nPHASE 1: ESTABLISHING REMOTE SESSION" -ForegroundColor Green
-              Write-Host "Using WinRM over HTTP (Port 5985)..." -ForegroundColor White
+              Write-Host "Creating PowerShell session to $hostname..." -ForegroundColor White
               
-              # Multiple connection attempts with different approaches
-              $connectionMethods = @(
-                  @{ Name = "Primary (with session options)"; UseSSL = $false; Auth = $null; Options = $sessionOptions },
-                  @{ Name = "Alternative (no session options)"; UseSSL = $false; Auth = $null; Options = $null },
-                  @{ Name = "With Basic Auth"; UseSSL = $false; Auth = "Basic"; Options = $sessionOptions }
-              )
-              
-              foreach ($method in $connectionMethods) {
-                  Write-Host "Attempting: $($method.Name)..." -ForegroundColor Yellow
-                  try {
-                      $sessionParams = @{
-                          ComputerName = $hostname
-                          Credential = $credential
-                          Port = 5985
-                          UseSSL = $method.UseSSL
-                          ErrorAction = "Stop"
-                      }
-                      
-                      if ($method.Auth) { $sessionParams.Authentication = $method.Auth }
-                      if ($method.Options) { $sessionParams.SessionOption = $method.Options }
-                      
-                      $session = New-PSSession @sessionParams
-                      
-                      if ($session) {
-                          Write-Host "✅ Connection successful using: $($method.Name)" -ForegroundColor Green
-                          break
-                      }
-                  } catch {
-                      Write-Host "⚠️  Connection failed: $($method.Name) - $($_.Exception.Message)" -ForegroundColor Yellow
-                      continue
-                  }
-              }
+              $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
               
               if (-not $session) {
-                  throw "All connection attempts failed. Please check WinRM configuration on target server."
+                  throw "Failed to create remote session"
               }
               
-              Write-Host "`nPHASE 2: VERIFYING SERVER ENVIRONMENT" -ForegroundColor Green
+              Write-Host "✅ Remote session established successfully" -ForegroundColor Green
+              
+              Write-Host "`nPHASE 2: VERIFYING SERVER ACCESS" -ForegroundColor Green
               $serverInfo = Invoke-Command -Session $session -ScriptBlock {
                   return @{
                       ComputerName = $env:COMPUTERNAME
-                      OSVersion = [Environment]::OSVersion.VersionString
                       CurrentUser = "$env:USERDOMAIN\$env:USERNAME"
                       IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                       IISInstalled = (Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue).Installed
-                      DateTime = Get-Date
                   }
               }
               
-              Write-Host "✅ Server environment verified:" -ForegroundColor Green
+              Write-Host "✅ Server access verified:" -ForegroundColor Green
               Write-Host "   - Server: $($serverInfo.ComputerName)" -ForegroundColor White
-              Write-Host "   - OS: $($serverInfo.OSVersion)" -ForegroundColor White
-              Write-Host "   - Current User: $($serverInfo.CurrentUser)" -ForegroundColor White
+              Write-Host "   - User: $($serverInfo.CurrentUser)" -ForegroundColor White
               Write-Host "   - Is Admin: $($serverInfo.IsAdmin)" -ForegroundColor White
               Write-Host "   - IIS Installed: $($serverInfo.IISInstalled)" -ForegroundColor White
               
               if (-not $serverInfo.IsAdmin) {
-                  Write-Host "⚠️  Warning: Remote user may not have administrative privileges" -ForegroundColor Yellow
-              }
-              
-              if (-not $serverInfo.IISInstalled) {
-                  Write-Host "⚠️  Warning: IIS may not be installed on target server" -ForegroundColor Yellow
+                  Write-Host "⚠️  Warning: User may not have full administrative privileges" -ForegroundColor Yellow
               }
               
               Write-Host "`nPHASE 3: PREPARING DEPLOYMENT DIRECTORY" -ForegroundColor Green
-              $deployResult = Invoke-Command -Session $session -ScriptBlock {
-                  $deployPath = "C:\inetpub\wwwroot\myapp"
-                  $backupPath = "C:\inetpub\wwwroot\myapp_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+              $deployPath = "C:\inetpub\wwwroot\myapp"
+              
+              Invoke-Command -Session $session -ScriptBlock {
+                  param($DeployPath)
                   
-                  try {
-                      Write-Host "Checking deployment path: $deployPath" -ForegroundColor White
-                      
-                      # Create backup if directory exists
-                      if (Test-Path $deployPath) {
-                          Write-Host "Creating backup at: $backupPath" -ForegroundColor White
-                          if (Test-Path $backupPath) {
-                              Remove-Item $backupPath -Recurse -Force
-                          }
-                          Copy-Item $deployPath $backupPath -Recurse -Force
-                          Write-Host "✅ Backup created successfully" -ForegroundColor Green
-                      }
-                      
-                      # Ensure deployment directory exists and is clean
-                      if (-not (Test-Path $deployPath)) {
-                          Write-Host "Creating deployment directory..." -ForegroundColor White
-                          New-Item -Path $deployPath -ItemType Directory -Force | Out-Null
-                      } else {
-                          Write-Host "Cleaning existing directory..." -ForegroundColor White
-                          Remove-Item "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
-                      }
-                      
-                      # Verify directory permissions
-                      $acl = Get-Acl $deployPath
-                      Write-Host "Directory access verified" -ForegroundColor White
-                      
-                      return @{
-                          Success = $true
-                          DeploymentPath = $deployPath
-                          BackupPath = if (Test-Path $backupPath) { $backupPath } else { $null }
-                      }
+                  Write-Host "Preparing directory: $DeployPath" -ForegroundColor White
+                  
+                  # Create backup if directory exists
+                  if (Test-Path $DeployPath) {
+                      $backupPath = "C:\inetpub\wwwroot\myapp_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                      Write-Host "Creating backup: $backupPath" -ForegroundColor White
+                      Copy-Item $DeployPath $backupPath -Recurse -Force
+                      Write-Host "✅ Backup created" -ForegroundColor Green
                   }
-                  catch {
-                      return @{
-                          Success = $false
-                          Error = $_.Exception.Message
-                      }
+                  
+                  # Ensure directory exists and is clean
+                  if (-not (Test-Path $DeployPath)) {
+                      New-Item -Path $DeployPath -ItemType Directory -Force | Out-Null
+                      Write-Host "✅ Directory created" -ForegroundColor Green
+                  } else {
+                      Remove-Item "$DeployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+                      Write-Host "✅ Directory cleaned" -ForegroundColor Green
                   }
-              }
-              
-              if (-not $deployResult.Success) {
-                  throw "Failed to prepare deployment directory: $($deployResult.Error)"
-              }
-              
-              Write-Host "✅ Deployment directory prepared: $($deployResult.DeploymentPath)" -ForegroundColor Green
-              if ($deployResult.BackupPath) {
-                  Write-Host "📦 Backup created: $($deployResult.BackupPath)" -ForegroundColor White
-              }
+                  
+              } -ArgumentList $deployPath
               
               Write-Host "`nPHASE 4: DEPLOYING APPLICATION FILES" -ForegroundColor Green
-              $sourceFiles = Get-ChildItem -Path "./app" -Recurse
-              Write-Host "Found $($sourceFiles.Count) files to deploy from ./app/" -ForegroundColor White
+              $sourceFiles = Get-ChildItem -Path "./app" -Recurse | Measure-Object
+              Write-Host "Copying $($sourceFiles.Count) files to server..." -ForegroundColor White
               
-              if ($sourceFiles.Count -eq 0) {
-                  Write-Host "⚠️  Warning: No files found in ./app/ directory" -ForegroundColor Yellow
-                  Write-Host "Checking artifact contents..." -ForegroundColor White
-                  Get-ChildItem -Path "./app" -Recurse | Format-Table Name, Length, LastWriteTime
-              }
+              # Display what we're deploying
+              Write-Host "Files to deploy:" -ForegroundColor White
+              Get-ChildItem -Path "./app" -Recurse | Format-Table Name, Length -AutoSize
               
-              Write-Host "Copying files to remote server..." -ForegroundColor White
               Copy-Item -Path "./app/*" -Destination "C:\inetpub\wwwroot\myapp\" -Recurse -Force -ToSession $session
               Write-Host "✅ Files copied successfully" -ForegroundColor Green
               
               Write-Host "`nPHASE 5: VERIFYING DEPLOYMENT" -ForegroundColor Green
-              $verificationResult = Invoke-Command -Session $session -ScriptBlock {
-                  $deployPath = "C:\inetpub\wwwroot\myapp"
-                  $deployedFiles = Get-ChildItem -Path $deployPath -Recurse | Measure-Object
+              $verification = Invoke-Command -Session $session -ScriptBlock {
+                  $deployedFiles = Get-ChildItem -Path "C:\inetpub\wwwroot\myapp" -Recurse | Measure-Object
                   return @{
                       FileCount = $deployedFiles.Count
-                      TotalSize = [math]::Round(($deployedFiles | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum / 1MB, 2)
-                      DeploymentPath = $deployPath
+                      Path = "C:\inetpub\wwwroot\myapp"
                   }
               }
               
               Write-Host "✅ Deployment verified:" -ForegroundColor Green
-              Write-Host "   - Files deployed: $($verificationResult.FileCount)" -ForegroundColor White
-              Write-Host "   - Total size: $($verificationResult.TotalSize) MB" -ForegroundColor White
-              Write-Host "   - Location: $($verificationResult.DeploymentPath)" -ForegroundColor White
+              Write-Host "   - Files deployed: $($verification.FileCount)" -ForegroundColor White
+              Write-Host "   - Location: $($verification.Path)" -ForegroundColor White
               
-              Write-Host "`nPHASE 6: FINALIZING DEPLOYMENT" -ForegroundColor Green
-              Write-Host "Restarting IIS to apply changes..." -ForegroundColor White
-              
-              $iisResult = Invoke-Command -Session $session -ScriptBlock {
-                  try {
-                      Write-Host "Stopping IIS..." -ForegroundColor White
-                      iisreset /stop
-                      Start-Sleep -Seconds 3
-                      
-                      Write-Host "Starting IIS..." -ForegroundColor White
-                      iisreset /start
-                      Start-Sleep -Seconds 5
-                      
-                      # Verify IIS is running
-                      $iisService = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
-                      if ($iisService -and $iisService.Status -eq 'Running') {
-                          return @{ 
-                              Success = $true
-                              Message = "IIS restarted successfully"
-                              Status = $iisService.Status
-                          }
-                      } else {
-                          return @{ 
-                              Success = $false
-                              Message = "IIS service is not running"
-                              Status = if ($iisService) { $iisService.Status } else { "Service not found" }
-                          }
-                      }
-                  }
-                  catch {
-                      return @{ 
-                          Success = $false
-                          Message = $_.Exception.Message
-                          Status = "Error"
-                      }
-                  }
-              }
-              
-              if ($iisResult.Success) {
-                  Write-Host "✅ $($iisResult.Message)" -ForegroundColor Green
-                  Write-Host "   IIS Status: $($iisResult.Status)" -ForegroundColor White
-              } else {
-                  Write-Host "⚠️  IIS restart completed with warnings: $($iisResult.Message)" -ForegroundColor Yellow
-                  Write-Host "   Status: $($iisResult.Status)" -ForegroundColor White
+              Write-Host "`nPHASE 6: RESTARTING IIS" -ForegroundColor Green
+              Invoke-Command -Session $session -ScriptBlock {
+                  Write-Host "Restarting IIS..." -ForegroundColor White
+                  iisreset
+                  Write-Host "✅ IIS restarted successfully" -ForegroundColor Green
               }
               
               Write-Host "`nPHASE 7: CLEANUP" -ForegroundColor Green
@@ -414,8 +225,8 @@ jobs:
               
               Write-Host "`n🎉 DEPLOYMENT COMPLETED SUCCESSFULLY!" -ForegroundColor Green
               Write-Host "======================================" -ForegroundColor Green
-              Write-Host "Application deployed to: http://$hostname/myapp" -ForegroundColor Cyan
-              Write-Host "Deployment time: $(Get-Date)" -ForegroundColor White
+              Write-Host "🌐 Application URL: http://$hostname/myapp" -ForegroundColor Cyan
+              Write-Host "⏰ Completed: $(Get-Date)" -ForegroundColor White
               
           }
           catch {
@@ -427,32 +238,22 @@ jobs:
                   Write-Host "Inner Error: $($_.Exception.InnerException.Message)" -ForegroundColor Red
               }
               
-              Write-Host "`nStack Trace:" -ForegroundColor Red
-              Write-Host $_.Exception.StackTrace -ForegroundColor Red
-              
-              Write-Host "`n💡 TROUBLESHOOTING TIPS:" -ForegroundColor Yellow
-              Write-Host "1. Check WinRM configuration on target server" -ForegroundColor Yellow
-              Write-Host "2. Verify user has administrative privileges" -ForegroundColor Yellow
-              Write-Host "3. Ensure Basic authentication is enabled in WinRM" -ForegroundColor Yellow
-              Write-Host "4. Check Windows Firewall and AWS Security Groups" -ForegroundColor Yellow
-              Write-Host "5. Verify username/password are correct" -ForegroundColor Yellow
-              
               # Cleanup session if it exists
               if ($session) {
                   Remove-PSSession -Session $session -ErrorAction SilentlyContinue
-                  Write-Host "`n🧹 Cleaned up remote session" -ForegroundColor White
+                  Write-Host "🧹 Cleaned up remote session" -ForegroundColor White
               }
               
               exit 1
           }
 
-      - name: Final deployment status
+      - name: Final success notification
         if: success()
         shell: pwsh
         run: |
           Write-Host "`n🏁 DEPLOYMENT SUMMARY" -ForegroundColor Cyan
           Write-Host "===================" -ForegroundColor Cyan
-          Write-Host "✅ Application successfully deployed to production!" -ForegroundColor Green
-          Write-Host "🌐 URL: http://${{ secrets.AWS_HOST }}/myapp" -ForegroundColor White
-          Write-Host "⏰ Completed at: $(Get-Date)" -ForegroundColor White
-          Write-Host "📊 Next steps: Verify application functionality and monitor logs" -ForegroundColor White
+          Write-Host "✅ SUCCESS: Application deployed to production!" -ForegroundColor Green
+          Write-Host "📍 URL: http://${{ secrets.AWS_HOST }}/myapp" -ForegroundColor White
+          Write-Host "🕒 Time: $(Get-Date)" -ForegroundColor White
+          Write-Host "📋 Next: Verify application functionality" -ForegroundColor White
