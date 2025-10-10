@@ -71,15 +71,20 @@ jobs:
           winrm set winrm/config/client/auth '@{Basic="true"}'
           Write-Host "✅ Basic authentication enabled" -ForegroundColor Green
           
-          Write-Host "4. Verifying client configuration..." -ForegroundColor Yellow
+          Write-Host "4. Setting registry keys for legacy auth..." -ForegroundColor Yellow
+          # Additional registry settings for older auth protocols
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters" /v AllowEncryptionOracle /t REG_DWORD /d 2 /f
+          Write-Host "✅ Registry settings updated" -ForegroundColor Green
+          
+          Write-Host "5. Verifying client configuration..." -ForegroundColor Yellow
           winrm get winrm/config/client
           Write-Host "✅ Client configuration complete" -ForegroundColor Green
 
-      - name: Test connectivity with new configuration
+      - name: Debug authentication issues
         shell: pwsh
         run: |
-          Write-Host "🔍 TESTING CONNECTIVITY WITH NEW CONFIG" -ForegroundColor Cyan
-          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "🔐 DEBUGGING AUTHENTICATION ISSUES" -ForegroundColor Cyan
+          Write-Host "===================================" -ForegroundColor Cyan
           
           $hostname = "${{ secrets.AWS_HOST }}"
           $username = "${{ secrets.AWS_USER }}"
@@ -87,35 +92,64 @@ jobs:
           Write-Host "Target: $hostname" -ForegroundColor Yellow
           Write-Host "User: $username" -ForegroundColor Yellow
           
+          # Test different authentication scenarios
+          Write-Host "`nTesting different authentication approaches..." -ForegroundColor Yellow
+          
           # Create credential
           $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
           
-          Write-Host "`n1. Testing WinRM connection..." -ForegroundColor Yellow
-          try {
-              Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
-              Write-Host "✅ WinRM connection successful!" -ForegroundColor Green
-          } catch {
-              Write-Host "❌ WinRM connection failed: $($_.Exception.Message)" -ForegroundColor Red
+          # Method 1: Test-WSMan with different auth types
+          $authMethods = @("Basic", "Negotiate", "CredSSP")
+          
+          foreach ($auth in $authMethods) {
+              Write-Host "`nTesting $auth authentication..." -ForegroundColor White
+              try {
+                  Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Authentication $auth -Credential $credential -ErrorAction Stop
+                  Write-Host "✅ $auth authentication: SUCCESS" -ForegroundColor Green
+                  break
+              } catch {
+                  Write-Host "❌ $auth authentication: $($_.Exception.Message)" -ForegroundColor Red
+              }
           }
           
-          Write-Host "`n2. Testing PowerShell remoting..." -ForegroundColor Yellow
+          # Method 2: Try different credential formats
+          Write-Host "`nTesting different credential formats..." -ForegroundColor Yellow
+          
+          # Try with just username (no domain)
+          if ($username -like "*\*") {
+              $localUser = $username.Split('\')[1]
+              Write-Host "Trying local user: $localUser" -ForegroundColor White
+              $localCred = New-Object System.Management.Automation.PSCredential($localUser, $securePassword)
+              try {
+                  Test-WSMan -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $localCred -ErrorAction Stop
+                  Write-Host "✅ Local user format: SUCCESS" -ForegroundColor Green
+              } catch {
+                  Write-Host "❌ Local user format: $($_.Exception.Message)" -ForegroundColor Red
+              }
+          }
+          
+          # Method 3: Test network connectivity
+          Write-Host "`nTesting network-level connectivity..." -ForegroundColor Yellow
           try {
-              $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
-              if ($session) {
-                  Write-Host "✅ PowerShell remoting successful!" -ForegroundColor Green
-                  Remove-PSSession $session
+              $portTest = Test-NetConnection -ComputerName $hostname -Port 5985 -InformationLevel Detailed
+              if ($portTest.TcpTestSucceeded) {
+                  Write-Host "✅ Network connectivity: SUCCESS" -ForegroundColor Green
+                  Write-Host "   Remote address: $($portTest.RemoteAddress)" -ForegroundColor White
+                  Write-Host "   Remote port: $($portTest.RemotePort)" -ForegroundColor White
+              } else {
+                  Write-Host "❌ Network connectivity: FAILED" -ForegroundColor Red
               }
           } catch {
-              Write-Host "❌ PowerShell remoting failed: $($_.Exception.Message)" -ForegroundColor Red
+              Write-Host "❌ Network test error: $($_.Exception.Message)" -ForegroundColor Red
           }
 
-      - name: Deploy application
+      - name: Deploy application with authentication fixes
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Write-Host "`n🚀 STARTING DEPLOYMENT" -ForegroundColor Cyan
-          WriteHost "====================" -ForegroundColor Cyan
+          Write-Host "====================" -ForegroundColor Cyan
           
           $hostname = "${{ secrets.AWS_HOST }}"
           $username = "${{ secrets.AWS_USER }}"
@@ -123,25 +157,59 @@ jobs:
           Write-Host "Target: $hostname" -ForegroundColor Yellow
           Write-Host "User: $username" -ForegroundColor Yellow
           
-          # Create credential
+          # Create credential - try different formats
           $securePassword = ConvertTo-SecureString "${{ secrets.AWS_PASSWORD }}" -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+          
+          # Try different username formats
+          $credentialFormats = @()
+          
+          if ($username -like "*\*") {
+              # If username has domain\user format, try both
+              $domainUser = $username
+              $localUser = $username.Split('\')[1]
+              $credentialFormats += @{Name = "Domain format: $domainUser"; Username = $domainUser}
+              $credentialFormats += @{Name = "Local format: $localUser"; Username = $localUser}
+          } else {
+              # If just username, try as is and with computer name
+              $credentialFormats += @{Name = "Plain username: $username"; Username = $username}
+              $credentialFormats += @{Name = "With local host: .\$username"; Username = ".\$username"}
+          }
           
           $session = $null
+          $successfulCredential = $null
+          
+          # Try each credential format
+          foreach ($credFormat in $credentialFormats) {
+              Write-Host "`nTrying credential format: $($credFormat.Name)" -ForegroundColor Yellow
+              try {
+                  $credential = New-Object System.Management.Automation.PSCredential($credFormat.Username, $securePassword)
+                  
+                  # Test connection
+                  $testSession = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
+                  
+                  if ($testSession) {
+                      Write-Host "✅ Authentication successful with: $($credFormat.Name)" -ForegroundColor Green
+                      $session = $testSession
+                      $successfulCredential = $credential
+                      break
+                  }
+              } catch {
+                  Write-Host "❌ Failed with $($credFormat.Name): $($_.Exception.Message)" -ForegroundColor Red
+              }
+          }
+          
+          if (-not $session) {
+              Write-Host "`n❌ All authentication attempts failed!" -ForegroundColor Red
+              Write-Host "💡 Please check:" -ForegroundColor Yellow
+              Write-Host "   - Username/password are correct" -ForegroundColor Yellow
+              Write-Host "   - User has administrative privileges on target" -ForegroundColor Yellow
+              Write-Host "   - User is not locked out" -ForegroundColor Yellow
+              Write-Host "   - Password meets complexity requirements" -ForegroundColor Yellow
+              exit 1
+          }
           
           try {
-              Write-Host "`nPHASE 1: ESTABLISHING REMOTE SESSION" -ForegroundColor Green
-              Write-Host "Creating PowerShell session to $hostname..." -ForegroundColor White
-              
-              $session = New-PSSession -ComputerName $hostname -Port 5985 -UseSSL:$false -Credential $credential -ErrorAction Stop
-              
-              if (-not $session) {
-                  throw "Failed to create remote session"
-              }
-              
-              Write-Host "✅ Remote session established successfully" -ForegroundColor Green
-              
-              Write-Host "`nPHASE 2: VERIFYING SERVER ACCESS" -ForegroundColor Green
+              Write-Host "`nPHASE 1: VERIFYING SERVER ACCESS" -ForegroundColor Green
               $serverInfo = Invoke-Command -Session $session -ScriptBlock {
                   return @{
                       ComputerName = $env:COMPUTERNAME
@@ -161,7 +229,7 @@ jobs:
                   Write-Host "⚠️  Warning: User may not have full administrative privileges" -ForegroundColor Yellow
               }
               
-              Write-Host "`nPHASE 3: PREPARING DEPLOYMENT DIRECTORY" -ForegroundColor Green
+              Write-Host "`nPHASE 2: PREPARING DEPLOYMENT DIRECTORY" -ForegroundColor Green
               $deployPath = "C:\inetpub\wwwroot\myapp"
               
               Invoke-Command -Session $session -ScriptBlock {
@@ -188,7 +256,7 @@ jobs:
                   
               } -ArgumentList $deployPath
               
-              Write-Host "`nPHASE 4: DEPLOYING APPLICATION FILES" -ForegroundColor Green
+              Write-Host "`nPHASE 3: DEPLOYING APPLICATION FILES" -ForegroundColor Green
               $sourceFiles = Get-ChildItem -Path "./app" -Recurse | Measure-Object
               Write-Host "Copying $($sourceFiles.Count) files to server..." -ForegroundColor White
               
@@ -199,7 +267,7 @@ jobs:
               Copy-Item -Path "./app/*" -Destination "C:\inetpub\wwwroot\myapp\" -Recurse -Force -ToSession $session
               Write-Host "✅ Files copied successfully" -ForegroundColor Green
               
-              Write-Host "`nPHASE 5: VERIFYING DEPLOYMENT" -ForegroundColor Green
+              Write-Host "`nPHASE 4: VERIFYING DEPLOYMENT" -ForegroundColor Green
               $verification = Invoke-Command -Session $session -ScriptBlock {
                   $deployedFiles = Get-ChildItem -Path "C:\inetpub\wwwroot\myapp" -Recurse | Measure-Object
                   return @{
@@ -212,14 +280,14 @@ jobs:
               Write-Host "   - Files deployed: $($verification.FileCount)" -ForegroundColor White
               Write-Host "   - Location: $($verification.Path)" -ForegroundColor White
               
-              Write-Host "`nPHASE 6: RESTARTING IIS" -ForegroundColor Green
+              Write-Host "`nPHASE 5: RESTARTING IIS" -ForegroundColor Green
               Invoke-Command -Session $session -ScriptBlock {
                   Write-Host "Restarting IIS..." -ForegroundColor White
                   iisreset
                   Write-Host "✅ IIS restarted successfully" -ForegroundColor Green
               }
               
-              Write-Host "`nPHASE 7: CLEANUP" -ForegroundColor Green
+              Write-Host "`nPHASE 6: CLEANUP" -ForegroundColor Green
               Remove-PSSession -Session $session
               Write-Host "Remote session closed" -ForegroundColor White
               
