@@ -1,0 +1,24 @@
+name: Test WinRM Connection
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  winrm-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Test WinRM connectivity
+        shell: pwsh
+        run: |
+          $ServerIP = "${{ secrets.SERVER_IP }}"
+          $Username = "${{ secrets.SERVER_USER }}"
+          $Password = "${{ secrets.SERVER_PASS }}"
+          $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
+          $Cred = New-Object System.Management.Automation.PSCredential ($Username, $SecurePass)
+
+          Test-WsMan -ComputerName $ServerIP -Credential $Cred
