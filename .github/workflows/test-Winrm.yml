@@ -15,7 +15,7 @@ jobs:
       - name: Test WinRM connectivity
         shell: pwsh
         run: |
-          $ServerIP = "13.200.118.49"
+          $ServerIP = "172.30.0.177"
           $Username = "Administrator"
           $Password = "?p=e8R%tWEFS5%?qphi$BPZ8pQjeDJqY"
           $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
