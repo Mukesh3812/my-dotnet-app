@@ -15,9 +15,9 @@ jobs:
       - name: Test WinRM connectivity
         shell: pwsh
         run: |
-          $ServerIP = "${{ secrets.SERVER_IP }}"
-          $Username = "${{ secrets.SERVER_USER }}"
-          $Password = "${{ secrets.SERVER_PASS }}"
+          $ServerIP = "13.200.118.49"
+          $Username = "Administrator"
+          $Password = "?p=e8R%tWEFS5%?qphi$BPZ8pQjeDJqY"
           $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
           $Cred = New-Object System.Management.Automation.PSCredential ($Username, $SecurePass)
 
